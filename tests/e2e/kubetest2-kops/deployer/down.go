@@ -17,16 +17,19 @@ limitations under the License.
 package deployer
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"k8s.io/klog/v2"
+	"k8s.io/kops/tests/e2e/kubetest2-kops/aws"
 	"k8s.io/kops/tests/e2e/kubetest2-kops/gce"
-	"sigs.k8s.io/kubetest2/pkg/boskos"
 	"sigs.k8s.io/kubetest2/pkg/exec"
 )
 
 func (d *deployer) Down() error {
+	ctx := context.TODO()
+
 	if err := d.init(); err != nil {
 		return err
 	}
@@ -54,20 +57,26 @@ func (d *deployer) Down() error {
 		return err
 	}
 
-	if d.CloudProvider == "gce" && d.createBucket {
-		gce.DeleteGCSBucket(d.stateStore(), d.GCPProject)
+	if d.createStateStoreBucket {
+		switch d.CloudProvider {
+		case "gce":
+			gce.DeleteGCSBucket(d.stateStore, d.GCPProject)
+		case "aws":
+			bucketName, err := aws.AWSBucketName(ctx, d.awsCredentials)
+			if err != nil {
+				return fmt.Errorf("error building aws bucket name: %w", err)
+			}
+
+			if err := aws.DeleteAWSBucket(ctx, d.awsCredentials, bucketName); err != nil {
+				klog.Warningf("error deleting AWS bucket: %w", err)
+			}
+		default:
+			return fmt.Errorf("bucket cleanup not implemented for cloud %q", d.CloudProvider)
+		}
 	}
 
-	if d.boskos != nil {
-		klog.V(2).Info("releasing boskos project")
-		err := boskos.Release(
-			d.boskos,
-			[]string{d.GCPProject},
-			d.boskosHeartbeatClose,
-		)
-		if err != nil {
-			return fmt.Errorf("down failed to release boskos project: %s", err)
-		}
+	if err := d.boskos.Cleanup(ctx); err != nil {
+		return err
 	}
 	return nil
 }

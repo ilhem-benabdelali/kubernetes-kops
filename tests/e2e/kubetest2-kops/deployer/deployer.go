@@ -22,13 +22,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/octago/sflags/gen/gpflag"
 	"github.com/spf13/pflag"
 	"k8s.io/klog/v2"
 	"k8s.io/kops/tests/e2e/kubetest2-kops/builder"
 	"k8s.io/kops/tests/e2e/pkg/target"
 
-	"sigs.k8s.io/boskos/client"
 	"sigs.k8s.io/kubetest2/pkg/types"
 )
 
@@ -55,7 +55,6 @@ type deployer struct {
 	Env              []string `flag:"env" desc:"Additional env vars to set for kops commands in NAME=VALUE format"`
 	CreateArgs       string   `flag:"create-args" desc:"Extra space-separated arguments passed to 'kops create cluster'"`
 	KopsBinaryPath   string   `flag:"kops-binary-path" desc:"The path to kops executable used for testing"`
-	createBucket     bool     `flag:"-"`
 
 	ControlPlaneIGOverrides []string `flag:"control-plane-instance-group-overrides" desc:"overrides for the control plane instance groups"`
 	NodeIGOverrides         []string `flag:"node-instance-group-overrides" desc:"overrides for the node instance groups"`
@@ -82,13 +81,17 @@ type deployer struct {
 	manifestPath string
 	terraform    *target.Terraform
 
-	// boskos struct field will be non-nil when the deployer is
-	// using boskos to acquire a GCP project
-	boskos *client.Client
+	BoskosResourceType string `flag:"boskos-resource-type" desc:"Resource type to acquire from boskos, for credentials"`
 
-	// this channel serves as a signal channel for the hearbeat goroutine
-	// so that it can be explicitly closed
-	boskosHeartbeatClose chan struct{}
+	boskos boskosHelper
+
+	// awsCredentials holds credentials for AWS loaded from boskos
+	awsCredentials *credentials.Credentials
+
+	// stateStore holds the kops state-store URL
+	stateStore string
+
+	createStateStoreBucket bool `flag:"-"`
 }
 
 // assert that New implements types.NewDeployer
@@ -106,9 +109,8 @@ func (d *deployer) Provider() string {
 func New(opts types.Options) (types.Deployer, *pflag.FlagSet) {
 	// create a deployer object and set fields that are not flag controlled
 	d := &deployer{
-		commonOptions:        opts,
-		BuildOptions:         &builder.BuildOptions{},
-		boskosHeartbeatClose: make(chan struct{}),
+		commonOptions: opts,
+		BuildOptions:  &builder.BuildOptions{},
 	}
 
 	dir, err := defaultArtifactsDir()
