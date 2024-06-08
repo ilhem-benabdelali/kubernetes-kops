@@ -50,13 +50,27 @@ type LoadBalancer struct {
 	// WellKnownServices indicates which services are supported by this resource.
 	// This field is internal and is not rendered to the cloud.
 	WellKnownServices []wellknownservices.WellKnownService
+
+	PrivateNetwork *PrivateNetwork
 }
 
+var _ fi.CloudupTask = &LoadBalancer{}
 var _ fi.CompareWithID = &LoadBalancer{}
+var _ fi.CloudupHasDependencies = &LoadBalancer{}
 var _ fi.HasAddress = &LoadBalancer{}
 
 func (l *LoadBalancer) CompareWithID() *string {
 	return l.LBID
+}
+
+func (l *LoadBalancer) GetDependencies(tasks map[string]fi.CloudupTask) []fi.CloudupTask {
+	var deps []fi.CloudupTask
+	for _, task := range tasks {
+		if _, ok := task.(*PrivateNetwork); ok {
+			deps = append(deps, task)
+		}
+	}
+	return deps
 }
 
 // GetWellKnownServices implements fi.HasAddress::GetWellKnownServices.
@@ -178,12 +192,14 @@ func (l *LoadBalancer) RenderScw(t *scaleway.ScwAPITarget, actual, expected, cha
 	} else {
 
 		klog.Infof("Creating new load-balancer with name %q", fi.ValueOf(expected.Name))
+		zone := scw.Zone(fi.ValueOf(expected.Zone))
 
 		lbCreated, err := lbService.CreateLB(&lb.ZonedAPICreateLBRequest{
-			Zone: scw.Zone(fi.ValueOf(expected.Zone)),
+			Zone: zone,
 			Name: fi.ValueOf(expected.Name),
 			Type: LbDefaultType,
 			Tags: expected.Tags,
+			//AssignFlexibleIP: fi.PtrTo(true),
 		})
 		if err != nil {
 			return fmt.Errorf("creating load-balancer: %w", err)
@@ -191,7 +207,24 @@ func (l *LoadBalancer) RenderScw(t *scaleway.ScwAPITarget, actual, expected, cha
 
 		_, err = lbService.WaitForLb(&lb.ZonedAPIWaitForLBRequest{
 			LBID: lbCreated.ID,
-			Zone: scw.Zone(fi.ValueOf(expected.Zone)),
+			Zone: zone,
+		})
+		if err != nil {
+			return fmt.Errorf("waiting for load-balancer %s: %w", lbCreated.ID, err)
+		}
+
+		_, err = lbService.AttachPrivateNetwork(&lb.ZonedAPIAttachPrivateNetworkRequest{
+			Zone:             zone,
+			LBID:             lbCreated.ID,
+			PrivateNetworkID: fi.ValueOf(expected.PrivateNetwork.ID),
+		})
+		if err != nil {
+			return fmt.Errorf("attaching load-balancer to private network: %w", err)
+		}
+
+		_, err = lbService.WaitForLb(&lb.ZonedAPIWaitForLBRequest{
+			LBID: lbCreated.ID,
+			Zone: zone,
 		})
 		if err != nil {
 			return fmt.Errorf("waiting for load-balancer %s: %w", lbCreated.ID, err)
@@ -203,7 +236,6 @@ func (l *LoadBalancer) RenderScw(t *scaleway.ScwAPITarget, actual, expected, cha
 		}
 		expected.LBID = &lbCreated.ID
 		expected.LBAddresses = lbIPs
-
 	}
 
 	return nil

@@ -58,6 +58,9 @@ func (l *LBBackend) GetDependencies(tasks map[string]fi.CloudupTask) []fi.Cloudu
 		if _, ok := task.(*Instance); ok {
 			deps = append(deps, task)
 		}
+		if _, ok := task.(*PrivateNIC); ok {
+			deps = append(deps, task)
+		}
 	}
 	return deps
 }
@@ -133,7 +136,7 @@ func (l *LBBackend) RenderScw(t *scaleway.ScwAPITarget, actual, expected, change
 	lbService := t.Cloud.LBService()
 	zone := scw.Zone(fi.ValueOf(expected.Zone))
 
-	controlPlanesIPs, err := getControlPlanesIPs(t.Cloud, expected.LoadBalancer, zone)
+	controlPlanesIPs, err := scaleway.GetControlPlanesIPs(t.Cloud, t.Cloud.ClusterName(expected.LoadBalancer.Tags), true)
 	if err != nil {
 		return err
 	}
@@ -238,26 +241,4 @@ func (l *LBBackend) RenderTerraform(t *terraform.TerraformTarget, actual, expect
 
 func (l *LBBackend) TerraformLink() *terraformWriter.Literal {
 	return terraformWriter.LiteralProperty("scaleway_lb_backend", fi.ValueOf(l.Name), "id")
-}
-
-func getControlPlanesIPs(scwCloud scaleway.ScwCloud, lb *LoadBalancer, zone scw.Zone) ([]string, error) {
-	var controlPlanePrivateIPs []string
-
-	servers, err := scwCloud.GetClusterServers(scwCloud.ClusterName(lb.Tags), nil)
-	if err != nil {
-		return nil, fmt.Errorf("getting cluster servers for load-balancer's back-end: %w", err)
-	}
-
-	for _, server := range servers {
-		if role := scaleway.InstanceRoleFromTags(server.Tags); role == scaleway.TagRoleWorker {
-			continue
-		}
-		ip, err := scwCloud.GetServerIP(server.ID, server.Zone)
-		if err != nil {
-			return nil, fmt.Errorf("getting IP of server %s for load-balancer's back-end: %w", server.Name, err)
-		}
-		controlPlanePrivateIPs = append(controlPlanePrivateIPs, ip)
-	}
-
-	return controlPlanePrivateIPs, nil
 }
